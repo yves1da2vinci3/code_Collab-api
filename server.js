@@ -1,10 +1,20 @@
-const express = require('express');
+import express from 'express';
+import http from 'http';
+import { Server } from 'socket.io';
+import mongoose from 'mongoose';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
 const app = express();
-const http = require('http').createServer(app);
-const io = require('socket.io')(http);
-const mongoose = require('mongoose');
-const dotenv = require('dotenv');
-dotenv.config()
+const server = http.createServer(app);
+const io = new Server(server,{
+  cors : {
+      origin :'*'
+  }
+});
+const PORT = process.env.PORT || 3000;
+
 mongoose.connect(process.env.MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
   .then(() => console.log('Connected to MongoDB'))
   .catch((error) => console.log('Error connecting to MongoDB:', error.message));
@@ -17,13 +27,8 @@ const codeVersionSchema = new mongoose.Schema({
 
 const CodeVersion = mongoose.model('CodeVersion', codeVersionSchema);
 
-const sessions = new Map(); // to store the active sessions
-
+const sessions = new Map();
 app.use(express.static('./dist'));
-
-app.get('/', (req, res) => {
-  res.sendFile(__dirname + '/index.html');
-});
 
 app.post('/save', async (req, res) => {
   const { code } = req.body;
@@ -45,18 +50,20 @@ app.get('/load/:id', async (req, res) => {
 });
 
 io.on('connection', (socket) => {
-  console.log('A user connected:', socket.id);
+  console.log(`A user connected: ${socket.id}`);
 
   socket.on('join_session', async (sessionId) => {
     console.log(`User ${socket.id} joined session ${sessionId}`);
     socket.join(sessionId);
-    if (!sessions.has(sessionId)) {
+    if (sessions.has(sessionId)) {
       const latestVersion = await CodeVersion.findOne({ sessionId }, {}, { sort: { 'createdAt': -1 } });
       const code = latestVersion ? latestVersion.code : '';
       sessions.set(sessionId, { code });
+      socket.emit("session_joined",({ error : false, sessionId : sessionId}))
+    }else{
+      socket.emit("session_joined",({ error : true, message : "session not found" }));
     }
-    const { code } = sessions.get(sessionId);
-    socket.emit('code_updated', { code });
+
   });
 
   socket.on('code_updated', async ({ code, sessionId }) => {
@@ -69,9 +76,9 @@ io.on('connection', (socket) => {
   });
 
   socket.on('chat_message', ({ message, sessionId }) => {
-    console.log(`User ${socket.id} sent message "${message}" in session ${sessionId}`);
-    const sender = socket.id.slice(0, 6); // use the first 6 characters of the socket ID as the sender name
-    socket.to(sessionId).emit('chat_message', { sender, message });
+    console.log(`User ${socket.id} sent message "${message.content}" in session ${sessionId}`);
+    const sender = socket.id.slice(0, 6);
+    socket.emit('chat_message', { sessionId, message });
   });
 
   socket.on('leave_session', (sessionId) => {
@@ -96,19 +103,18 @@ io.on('connection', (socket) => {
     // Send the session ID back to the client
     socket.emit('session_created', { sessionId });
   });
-
   socket.on('disconnect', () => {
     console.log('A user disconnected:', socket.id);
     for (const [sessionId, session] of sessions) {
     if (session.socketId === socket.id) {
-    console.log(User `${socket.id} disconnected from session ${sessionId}`);
+    console.log(`User ${socket.id} disconnected from session ${sessionId}`);
     session.socketId = null;
     socket.to(sessionId).emit('user_disconnected', { userId: socket.id });
     }
     }
     });
-    });
+})
     
-    http.listen(3000, () => {
-    console.log('Server listening on port 3000');
-    });
+    server.listen(PORT, () => {
+    console.log(`Server listening on port ${PORT}`)
+    })
